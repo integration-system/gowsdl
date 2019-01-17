@@ -150,14 +150,16 @@ type basicAuth struct {
 }
 
 type options struct {
-	tlsCfg      *tls.Config
-	auth        *basicAuth
-	timeout     time.Duration
-	httpHeaders map[string]string
+	insecureSkipVerify bool
+	tlsCfg             *tls.Config
+	auth               *basicAuth
+	timeout            time.Duration
+	httpHeaders        map[string]string
 }
 
 var defaultOptions = options{
-	timeout: time.Duration(30 * time.Second),
+	insecureSkipVerify: false,
+	timeout:            time.Duration(30 * time.Second),
 }
 
 // A Option sets options such as credentials, tls, etc.
@@ -181,6 +183,13 @@ func WithTLS(tls *tls.Config) Option {
 func WithTimeout(t time.Duration) Option {
 	return func(o *options) {
 		o.timeout = t
+	}
+}
+
+// WithInsecureSkipVerify is an Option to set insecure skip verify
+func WithInsecureSkipVerify(skipVerify bool) Option {
+	return func(o *options) {
+		o.insecureSkipVerify = skipVerify
 	}
 }
 
@@ -216,7 +225,27 @@ func (s *Client) AddHeader(header interface{}) {
 }
 
 // Call performs HTTP POST request
+func (s *Client) CallWithInterceptor(
+	soapAction string,
+	request,
+	response interface{},
+	interceptor func(request string, response string),
+) error {
+	return s.call(soapAction, request, response, interceptor)
+}
+
+// Call performs HTTP POST request
 func (s *Client) Call(soapAction string, request, response interface{}) error {
+	return s.call(soapAction, request, response, nil)
+}
+
+// Call performs HTTP POST request
+func (s *Client) call(
+	soapAction string,
+	request,
+	response interface{},
+	interceptor func(request string, response string),
+) error {
 	envelope := SOAPEnvelope{}
 
 	if s.headers != nil && len(s.headers) > 0 {
@@ -227,6 +256,7 @@ func (s *Client) Call(soapAction string, request, response interface{}) error {
 
 	envelope.Body.Content = request
 	buffer := new(bytes.Buffer)
+	var bufferTemp bytes.Buffer
 
 	encoder := xml.NewEncoder(buffer)
 
@@ -236,6 +266,10 @@ func (s *Client) Call(soapAction string, request, response interface{}) error {
 
 	if err := encoder.Flush(); err != nil {
 		return err
+	}
+
+	if interceptor != nil {
+		bufferTemp = *buffer
 	}
 
 	req, err := http.NewRequest("POST", s.url, buffer)
@@ -271,6 +305,9 @@ func (s *Client) Call(soapAction string, request, response interface{}) error {
 	defer res.Body.Close()
 
 	rawbody, err := ioutil.ReadAll(res.Body)
+	if interceptor != nil {
+		interceptor(bufferTemp.String(), string(rawbody))
+	}
 	if err != nil {
 		return err
 	}
